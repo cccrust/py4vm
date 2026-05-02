@@ -32,6 +32,8 @@ enum Instruction {
     LoadString(String),
     StoreName(String),
     LoadName(String),
+    Import(String),
+    FromImport(String, String),
     BinaryAdd,
     BinarySubtract,
     BinaryMultiply,
@@ -45,16 +47,60 @@ enum Instruction {
     Return,
 }
 
+struct Module {
+    name: String,
+    code: Vec<Instruction>,
+    exports: HashMap<String, Op>,
+}
+
 struct VM {
     stack: Vec<Op>,
     locals: HashMap<String, Op>,
+    modules: HashMap<String, Module>,
     code: Vec<Instruction>,
     pc: usize,
 }
 
 impl VM {
     fn new(code: Vec<Instruction>) -> Self {
-        VM { stack: Vec::new(), locals: HashMap::new(), code, pc: 0 }
+        let mut modules = HashMap::new();
+        
+        modules.insert("sys".to_string(), Module {
+            name: "sys".to_string(),
+            code: vec![],
+            exports: {
+                let mut e = HashMap::new();
+                e.insert("version".to_string(), Op::String("0.2.0".to_string()));
+                e.insert("maxsize".to_string(), Op::Int(i64::MAX));
+                e
+            },
+        });
+        
+        modules.insert("math".to_string(), Module {
+            name: "math".to_string(),
+            code: vec![],
+            exports: {
+                let mut e = HashMap::new();
+                e.insert("pi".to_string(), Op::Float(3.14159265359));
+                e.insert("e".to_string(), Op::Float(2.71828182846));
+                e.insert("tau".to_string(), Op::Float(6.28318530718));
+                e
+            },
+        });
+        
+        modules.insert("os".to_string(), Module {
+            name: "os".to_string(),
+            code: vec![],
+            exports: {
+                let mut e = HashMap::new();
+                e.insert("name".to_string(), Op::String("posix".to_string()));
+                e.insert("sep".to_string(), Op::String("/".to_string()));
+                e.insert("linesep".to_string(), Op::String("\n".to_string()));
+                e
+            },
+        });
+        
+        VM { stack: Vec::new(), locals: HashMap::new(), modules, code, pc: 0 }
     }
 
     fn run(&mut self) -> Result<Op, String> {
@@ -69,6 +115,20 @@ impl VM {
                 Instruction::LoadString(s) => self.stack.push(Op::String(s)),
                 Instruction::StoreName(n) => { if let Some(v) = self.stack.pop() { self.locals.insert(n, v); } }
                 Instruction::LoadName(n) => { if let Some(v) = self.locals.get(&n) { self.stack.push((*v).clone()); } }
+                Instruction::Import(m) => {
+                    if let Some(module) = self.modules.get(&m) {
+                        for (k, v) in &module.exports {
+                            self.locals.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                Instruction::FromImport(m, n) => {
+                    if let Some(module) = self.modules.get(&m) {
+                        if let Some(v) = module.exports.get(&n) {
+                            self.stack.push(v.clone());
+                        }
+                    }
+                }
                 Instruction::BinaryAdd => {
                     let b = self.stack.pop().ok_or("underflow")?;
                     let a = self.stack.pop().ok_or("underflow")?;
@@ -86,7 +146,13 @@ impl VM {
                 Instruction::BinaryMultiply => {
                     let b = self.stack.pop().ok_or("underflow")?;
                     let a = self.stack.pop().ok_or("underflow")?;
-                    self.stack.push(match (a, b) { (Op::Int(i1), Op::Int(i2)) => Op::Int(i1 * i2), (Op::Float(f1), Op::Float(f2)) => Op::Float(f1 * f2), _ => Op::None });
+                    self.stack.push(match (a, b) { 
+                        (Op::Int(i1), Op::Int(i2)) => Op::Int(i1 * i2), 
+                        (Op::Float(f1), Op::Float(f2)) => Op::Float(f1 * f2),
+                        (Op::Int(i1), Op::Float(f2)) => Op::Float((i1 as f64) * f2),
+                        (Op::Float(f1), Op::Int(i2)) => Op::Float(f1 * (i2 as f64)),
+                        _ => Op::None 
+                    });
                 }
                 Instruction::BinaryDivide => {
                     let b = self.stack.pop().ok_or("underflow")?;
@@ -155,6 +221,27 @@ fn main() {
         ],
         "ifelse" => vec![Instruction::LoadInt(5), Instruction::StoreName("x".to_string()), Instruction::LoadName("x".to_string()), Instruction::LoadInt(3), Instruction::CompareOp(4), Instruction::JumpIfFalse(9), Instruction::LoadString("x > 3".to_string()), Instruction::Call("print".to_string(), 1), Instruction::Jump(11), Instruction::LoadString("x <= 3".to_string()), Instruction::Call("print".to_string(), 1), Instruction::Return],
         "arith" => vec![Instruction::LoadInt(10), Instruction::LoadInt(3), Instruction::BinaryAdd, Instruction::Call("print".to_string(), 1), Instruction::LoadInt(10), Instruction::LoadInt(3), Instruction::BinarySubtract, Instruction::Call("print".to_string(), 1), Instruction::LoadInt(10), Instruction::LoadInt(3), Instruction::BinaryMultiply, Instruction::Call("print".to_string(), 1), Instruction::LoadInt(10), Instruction::LoadInt(3), Instruction::BinaryDivide, Instruction::Call("print".to_string(), 1), Instruction::LoadInt(10), Instruction::LoadInt(3), Instruction::BinaryModulo, Instruction::Call("print".to_string(), 1), Instruction::Return],
+        "import" => vec![
+            Instruction::Import("sys".to_string()),
+            Instruction::Import("math".to_string()),
+            Instruction::Import("os".to_string()),
+            Instruction::LoadName("version".to_string()), Instruction::Call("print".to_string(), 1),
+            Instruction::LoadName("pi".to_string()), Instruction::Call("print".to_string(), 1),
+            Instruction::LoadName("name".to_string()), Instruction::Call("print".to_string(), 1),
+            Instruction::Return
+        ],
+        "from_import" => vec![
+            Instruction::FromImport("math".to_string(), "pi".to_string()),
+            Instruction::FromImport("math".to_string(), "e".to_string()),
+            Instruction::Call("print".to_string(), 2),
+            Instruction::Return
+        ],
+        "mix" => vec![
+            Instruction::Import("math".to_string()),
+            Instruction::LoadName("pi".to_string()), Instruction::LoadInt(2), Instruction::BinaryMultiply,
+            Instruction::Call("print".to_string(), 1),
+            Instruction::Return
+        ],
         _ => { eprintln!("Unknown: {}", test); exit(1); }
     };
     let mut vm = VM::new(code);
